@@ -11,6 +11,14 @@ function sceneKey(scene: Scene): string {
   return JSON.stringify(scene)
 }
 
+const M2_PER_PYEONG = 3.305785
+
+function formatArea(areaCm2: number): string {
+  const squareMeters = areaCm2 / 10000
+  const pyeong = squareMeters / M2_PER_PYEONG
+  return `${squareMeters.toFixed(1)}㎡ · ${pyeong.toFixed(1)}평`
+}
+
 export default function App() {
   const [draft, setDraft] = useState(createSample)
   const [scene, setScene] = useState(createSample)
@@ -61,7 +69,7 @@ export default function App() {
                   onClick={() => setGoal(id)}
                 >
                   <span>{GOAL_LABEL[id]}</span>
-                  <strong>{result?.ok ? `${(result.openAreaCm2 / 10000).toFixed(1)}㎡` : '배치 불가'}</strong>
+                  <strong>{result?.ok ? formatArea(result.openAreaCm2) : '배치 불가'}</strong>
                   <small>{id === 'open' ? '가장 큰 빈 직사각형' : '빈 공간'}</small>
                   <p>{result?.message}</p>
                 </button>
