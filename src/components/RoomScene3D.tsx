@@ -258,6 +258,10 @@ function FurniturePiece({ item }: { item: Placed }) {
   )
 }
 
+export function FurnitureModel({ type, w, d, h }: { type: FurnitureType; w: number; d: number; h: number }) {
+  return <Model type={type} w={w} d={d} h={h} />
+}
+
 function Model({ type, w, d, h }: { type: FurnitureType; w: number; d: number; h: number }) {
   if (type === 'bed') return <Bed w={w} d={d} h={h} />
   if (type === 'desk') return <Desk w={w} d={d} h={h} />

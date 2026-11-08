@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import type { UnitOpening, UnitPlan, UnitRoom, UnitRoomKind } from '../layout/unitPlan.ts'
 import type { Wall } from '../types.ts'
+import { DoorSwing, WindowStroke } from './planMarks.tsx'
+import { usePlanZoom } from './usePlanZoom.ts'
 
 const FILL: Record<UnitRoomKind, string> = {
   bedroom: '#e6e1d6',
@@ -40,24 +42,26 @@ export function UnitPlan2D({
   onRename: (roomId: string, name: string) => void
   onOpening: (roomId: string, kind: OpeningKind, opening: UnitOpening) => void
 }) {
-  const svgRef = useRef<SVGSVGElement>(null)
   const dragRef = useRef<Drag | null>(null)
   const [editing, setEditing] = useState<{ id: string; value: string } | null>(null)
-  const pad = 88
+  const padLeft = 128
+  const padTop = 72
+  const padBottom = 148
   const maxW = 760
   const maxH = 560
-  const scale = Math.min((maxW - pad * 2) / width, (maxH - pad * 2) / depth)
-  const viewW = width * scale + pad * 2
-  const viewH = depth * scale + pad * 2
-  const X = (x: number) => pad + x * scale
-  const Y = (y: number) => pad + (depth - y) * scale
+  const scale = Math.min((maxW - padLeft - 28) / width, (maxH - padTop - padBottom) / depth)
+  const viewW = width * scale + padLeft + 28
+  const viewH = depth * scale + padTop + padBottom
+  const { svgRef, viewBox, zoom, zoomBy } = usePlanZoom(viewW, viewH)
+  const X = (x: number) => padLeft + x * scale
+  const Y = (y: number) => padTop + (depth - y) * scale
 
   useEffect(() => {
     const move = (event: PointerEvent) => {
       const drag = dragRef.current
       const svg = svgRef.current
       if (!drag || !svg) return
-      const point = clientToCm(svg, event.clientX, event.clientY, pad, scale, depth)
+      const point = clientToCm(svg, event.clientX, event.clientY, padLeft, padTop, scale, depth)
       if (!point) return
       const hit = closestWall(drag.room, point.x, point.y)
       const minWidth = drag.kind === 'door' ? 70 : 80
@@ -72,7 +76,7 @@ export function UnitPlan2D({
       window.removeEventListener('pointermove', move)
       window.removeEventListener('pointerup', up)
     }
-  }, [depth, onOpening, pad, scale])
+  }, [depth, onOpening, padLeft, padTop, scale])
 
   const startDrag = (event: ReactPointerEvent, room: UnitRoom, kind: OpeningKind, end: NodeEnd, opening: UnitOpening) => {
     event.preventDefault()
@@ -83,8 +87,14 @@ export function UnitPlan2D({
 
   return (
     <figure className="plan">
-      <figcaption>레퍼런스 평면</figcaption>
-      <svg ref={svgRef} viewBox={`0 0 ${viewW} ${viewH}`} role="img" aria-label="방 배치 평면도">
+      <figcaption>
+        배치 시안
+        <span className="plan-zoom">
+          <button type="button" onClick={() => zoomBy(1 / 1.25)}>축소</button>
+          <button type="button" onClick={() => zoomBy(1.25)}>확대</button>
+        </span>
+      </figcaption>
+      <svg ref={svgRef} viewBox={viewBox} role="img" aria-label="방 배치 평면도">
         <rect x={X(0)} y={Y(depth)} width={width * scale} height={depth * scale} fill="#f4ecdf" stroke="#1c1c1c" strokeWidth={7} />
         {plan.rooms.map((room) => (
           <g key={room.id} onClick={() => onSelect(room)} style={{ cursor: 'pointer' }}>
@@ -143,9 +153,7 @@ export function UnitPlan2D({
                 room={room}
                 opening={room.door}
                 kind="door"
-                heightCm={null}
-                envelopeWidth={width}
-                envelopeDepth={depth}
+                zoom={zoom}
                 X={X}
                 Y={Y}
                 onNode={(event, end) => startDrag(event, room, 'door', end, room.door!)}
@@ -156,9 +164,7 @@ export function UnitPlan2D({
                 room={room}
                 opening={room.window}
                 kind="window"
-                heightCm={room.window.height}
-                envelopeWidth={width}
-                envelopeDepth={depth}
+                zoom={zoom}
                 X={X}
                 Y={Y}
                 onNode={(event, end) => startDrag(event, room, 'window', end, room.window!)}
@@ -166,8 +172,8 @@ export function UnitPlan2D({
             )}
           </g>
         ))}
-        <text x={viewW / 2} y={viewH - 14} textAnchor="middle" className="dim">{Math.round(width)}cm</text>
-        <text x={16} y={viewH / 2} textAnchor="middle" className="dim" transform={`rotate(-90 16 ${viewH / 2})`}>{Math.round(depth)}cm</text>
+        <WallDimensions plan={plan} width={width} depth={depth} X={X} Y={Y} />
+        <Sunlight width={width} depth={depth} scale={scale} X={X} Y={Y} />
       </svg>
     </figure>
   )
@@ -177,9 +183,7 @@ function OpeningShape({
   room,
   opening,
   kind,
-  heightCm,
-  envelopeWidth,
-  envelopeDepth,
+  zoom,
   X,
   Y,
   onNode,
@@ -187,9 +191,7 @@ function OpeningShape({
   room: UnitRoom
   opening: UnitOpening
   kind: OpeningKind
-  heightCm: number | null
-  envelopeWidth: number
-  envelopeDepth: number
+  zoom: number
   X: (value: number) => number
   Y: (value: number) => number
   onNode: (event: ReactPointerEvent, end: NodeEnd) => void
@@ -199,118 +201,214 @@ function OpeningShape({
   const x = opening.wall === 'east' ? room.x + room.w : opening.wall === 'west' ? room.x : room.x + opening.offset
   const x2 = horizontal ? x + opening.width : x
   const y2 = horizontal ? y : y + opening.width
-  const stroke = kind === 'window' ? '#9ec9e2' : '#f4ecdf'
-  const exterior = opening.wall === 'south'
-    ? room.y <= 0.8
-    : opening.wall === 'north'
-      ? room.y + room.d >= envelopeDepth - 0.8
-      : opening.wall === 'west'
-        ? room.x <= 0.8
-        : room.x + room.w >= envelopeWidth - 0.8
+  const hinge = { x, y }
+  const closed = { x: x2, y: y2 }
+  const inward = inwardOf(opening.wall)
+  const open = { x: hinge.x + inward.x * opening.width, y: hinge.y + inward.y * opening.width }
   return (
     <>
-      <line x1={X(x)} y1={Y(y)} x2={X(x2)} y2={Y(y2)} stroke={stroke} strokeWidth={8} />
-      {kind === 'window' && (
-        <OpeningDimension x={x} y={y} x2={x2} y2={y2} wall={opening.wall} widthCm={opening.width} heightCm={heightCm} exterior={exterior} X={X} Y={Y} />
-      )}
-      <OpeningNode cx={X(x)} cy={Y(y)} kind={kind} label={kind === 'door' ? '문 시작' : '창문 시작'} onPointerDown={(event) => onNode(event, 'start')} />
-      <OpeningNode cx={X(x2)} cy={Y(y2)} kind={kind} label={kind === 'door' ? '문 끝' : '창문 끝'} onPointerDown={(event) => onNode(event, 'end')} />
+      {kind === 'window'
+        ? <WindowStroke a={hinge} b={closed} X={X} Y={Y} />
+        : <DoorSwing hinge={hinge} closed={closed} open={open} X={X} Y={Y} />}
+      <OpeningNode cx={X(x)} cy={Y(y)} kind={kind} zoom={zoom} label={kind === 'door' ? '문 시작' : '창문 시작'} onPointerDown={(event) => onNode(event, 'start')} />
+      <OpeningNode cx={X(x2)} cy={Y(y2)} kind={kind} zoom={zoom} label={kind === 'door' ? '문 끝' : '창문 끝'} onPointerDown={(event) => onNode(event, 'end')} />
     </>
   )
 }
 
-function OpeningDimension({
-  x,
-  y,
-  x2,
-  y2,
-  wall,
-  widthCm,
-  heightCm,
-  exterior,
+function inwardOf(wall: Wall): { x: number; y: number } {
+  if (wall === 'south') return { x: 0, y: 1 }
+  if (wall === 'north') return { x: 0, y: -1 }
+  if (wall === 'west') return { x: 1, y: 0 }
+  return { x: -1, y: 0 }
+}
+
+function WallDimensions({
+  plan,
+  width,
+  depth,
   X,
   Y,
 }: {
-  x: number
-  y: number
-  x2: number
-  y2: number
-  wall: Wall
-  widthCm: number
-  heightCm: number | null
-  exterior: boolean
+  plan: UnitPlan
+  width: number
+  depth: number
   X: (value: number) => number
   Y: (value: number) => number
 }) {
-  const x1 = X(x)
-  const y1 = Y(y)
-  const xe = X(x2)
-  const ye = Y(y2)
-  const nx = wall === 'west' ? -1 : wall === 'east' ? 1 : 0
-  const ny = wall === 'south' ? 1 : wall === 'north' ? -1 : 0
-  const dir = exterior ? 1 : -1
-  const clear = 14
-  const gap = exterior ? 46 : 36
-  const past = 5
-  const ox = nx * dir * gap
-  const oy = ny * dir * gap
-  const ax = x1 + ox
-  const ay = y1 + oy
-  const bx = xe + ox
-  const by = ye + oy
-  const mx = (ax + bx) / 2 + nx * dir * 8
-  const my = (ay + by) / 2 + ny * dir * 8
-  const label = heightCm === null ? `${Math.round(widthCm)}cm` : `${Math.round(widthCm)}×${Math.round(heightCm)}`
-  const vertical = nx !== 0
+  const xs = stops([0, width, ...plan.rooms.flatMap((room) => [room.x, room.x + room.w])])
+  const ys = stops([0, depth, ...plan.rooms.flatMap((room) => [room.y, room.y + room.d])])
+  const south = Y(0)
+  const west = X(0)
   return (
-    <g className="opening-dim">
-      <line x1={x1 + nx * dir * clear} y1={y1 + ny * dir * clear} x2={ax + nx * dir * past} y2={ay + ny * dir * past} />
-      <line x1={xe + nx * dir * clear} y1={ye + ny * dir * clear} x2={bx + nx * dir * past} y2={by + ny * dir * past} />
-      <line x1={ax} y1={ay} x2={bx} y2={by} />
-      <line x1={ax - 3.5} y1={ay + 3.5} x2={ax + 3.5} y2={ay - 3.5} />
-      <line x1={bx - 3.5} y1={by + 3.5} x2={bx + 3.5} y2={by - 3.5} />
-      <text
-        x={mx}
-        y={my}
-        textAnchor="middle"
-        dominantBaseline="middle"
-        className="dim opening-dim-text"
-        transform={vertical ? `rotate(-90 ${mx} ${my})` : undefined}
-      >
-        {label}
-      </text>
+    <g className="opening-dim" pointerEvents="none">
+      <SegmentChain horizontal from={xs} toSvg={X} face={south} chain={48} overall={92} total={Math.round(width)} />
+      <SegmentChain horizontal={false} from={ys} toSvg={Y} face={west} chain={-52} overall={-96} total={Math.round(depth)} />
     </g>
   )
+}
+
+function SegmentChain({
+  horizontal,
+  from,
+  toSvg,
+  face,
+  chain,
+  overall,
+  total,
+}: {
+  horizontal: boolean
+  from: number[]
+  toSvg: (value: number) => number
+  face: number
+  chain: number
+  overall: number
+  total: number
+}) {
+  const points = from.map(toSvg)
+  const first = points[0] ?? 0
+  const last = points[points.length - 1] ?? first
+  return (
+    <g>
+      {from.slice(0, -1).map((start, index) => {
+        const end = from[index + 1]!
+        const a = points[index]!
+        const b = points[index + 1]!
+        return (
+          <DimSpan
+            key={`${start}-${end}`}
+            horizontal={horizontal}
+            a={a}
+            b={b}
+            face={face}
+            at={face + chain}
+            label={`${Math.round(end - start)}cm`}
+          />
+        )
+      })}
+      <DimSpan horizontal={horizontal} a={first} b={last} face={face} at={face + overall} label={`${total}cm`} />
+    </g>
+  )
+}
+
+function DimSpan({
+  horizontal,
+  a,
+  b,
+  face,
+  at,
+  label,
+}: {
+  horizontal: boolean
+  a: number
+  b: number
+  face: number
+  at: number
+  label: string
+}) {
+  const start = Math.min(a, b)
+  const end = Math.max(a, b)
+  const mid = (start + end) / 2
+  const tick = 3.5
+  if (horizontal) {
+    return (
+      <g>
+        <line x1={start} y1={face} x2={start} y2={at + Math.sign(at - face) * 5} />
+        <line x1={end} y1={face} x2={end} y2={at + Math.sign(at - face) * 5} />
+        <line x1={start} y1={at} x2={end} y2={at} />
+        <line x1={start - tick} y1={at + tick} x2={start + tick} y2={at - tick} />
+        <line x1={end - tick} y1={at + tick} x2={end + tick} y2={at - tick} />
+        <text x={mid} y={at - 8} textAnchor="middle" className="dim">{label}</text>
+      </g>
+    )
+  }
+  return (
+    <g>
+      <line x1={face} y1={start} x2={at + Math.sign(at - face) * 5} y2={start} />
+      <line x1={face} y1={end} x2={at + Math.sign(at - face) * 5} y2={end} />
+      <line x1={at} y1={start} x2={at} y2={end} />
+      <line x1={at - tick} y1={start + tick} x2={at + tick} y2={start - tick} />
+      <line x1={at - tick} y1={end + tick} x2={at + tick} y2={end - tick} />
+      <text x={at - 10} y={mid} textAnchor="middle" dominantBaseline="middle" className="dim" transform={`rotate(-90 ${at - 10} ${mid})`}>{label}</text>
+    </g>
+  )
+}
+
+function stops(values: number[]): number[] {
+  const sorted = values.map((value) => Math.round(value)).sort((left, right) => left - right)
+  const unique: number[] = []
+  for (const value of sorted) {
+    if (unique.length === 0 || value - unique[unique.length - 1]! > 1) unique.push(value)
+  }
+  return unique
 }
 
 function OpeningNode({
   cx,
   cy,
   kind,
+  zoom,
   label,
   onPointerDown,
 }: {
   cx: number
   cy: number
   kind: OpeningKind
+  zoom: number
   label: string
   onPointerDown: (event: ReactPointerEvent) => void
 }) {
+  const radius = 4.5 / zoom
   return (
-    <circle className={kind === 'window' ? 'opening-node window' : 'opening-node'} cx={cx} cy={cy} r={6} onPointerDown={onPointerDown}>
+    <circle
+      className={kind === 'window' ? 'opening-node window' : 'opening-node'}
+      cx={cx}
+      cy={cy}
+      r={radius}
+      strokeWidth={1.15 / zoom}
+      onPointerDown={onPointerDown}
+    >
       <title>{label}. 끌어서 위치와 폭을 바꿉니다.</title>
     </circle>
   )
 }
 
-function clientToCm(svg: SVGSVGElement, clientX: number, clientY: number, pad: number, scale: number, depth: number) {
+function clientToCm(svg: SVGSVGElement, clientX: number, clientY: number, padLeft: number, padTop: number, scale: number, depth: number) {
   const ctm = svg.getScreenCTM()
   if (!ctm) return null
   const point = svg.createSVGPoint()
   point.x = clientX
   point.y = clientY
   const local = point.matrixTransform(ctm.inverse())
-  return { x: (local.x - pad) / scale, y: depth - (local.y - pad) / scale }
+  return { x: (local.x - padLeft) / scale, y: depth - (local.y - padTop) / scale }
+}
+
+function Sunlight({
+  width,
+  depth,
+  scale,
+  X,
+  Y,
+}: {
+  width: number
+  depth: number
+  scale: number
+  X: (value: number) => number
+  Y: (value: number) => number
+}) {
+  const reach = Math.min(110, depth * 0.16)
+  return (
+    <g pointerEvents="none">
+      <g className="sunlight">
+        <rect x={X(0)} y={Y(reach)} width={width * scale} height={reach * scale} />
+      </g>
+      <g className="compass" transform={`translate(${X(width / 2)} 6)`}>
+        <text y="12" textAnchor="middle">N</text>
+        <path d="M0 16 L-12 44 L0 50 L12 44 Z" />
+        <path d="M0 16 L12 44 L0 50 Z" />
+      </g>
+    </g>
+  )
 }
 
 function closestWall(room: UnitRoom, x: number, y: number): { wall: Wall; t: number; span: number } {

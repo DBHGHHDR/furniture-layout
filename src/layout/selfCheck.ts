@@ -118,36 +118,52 @@ const inside = makePlaced({ id: 'in', type: 'nightstand', width: 80, depth: 80, 
 assert(!isValid(outside, lRoom, [], [], []), '윤곽 밖 가구')
 assert(isValid(inside, lRoom, [], [], []), '윤곽 안 가구')
 
-const unit = generateUnitPlans({ width: 1180, depth: 775, bedrooms: 2, bathrooms: 2, living: true, entrance: 'south' })
-assert(unit.plans.length === 1, unit.message || '평면 없음')
-const photo = unit.plans[0]!
-assert(photo.label === '1층 평면도', photo.label)
-assert(photo.note.length > 0, '도면 설명')
-for (const name of ['다용도실', '주방', '거실', '드레스룸', '큰방', '현관', '작은방']) {
-  assert(photo.rooms.some((room) => room.name === name), name)
-}
-assert(photo.rooms.filter((room) => room.kind === 'bedroom').length === 2, '침실 수')
-assert(photo.rooms.filter((room) => room.kind === 'bathroom').length === 2, '화장실 수')
-const utility = photo.rooms.find((room) => room.name === '다용도실')
-assert(utility !== undefined && utility.w === 180 && utility.d === 410, `다용도실 ${utility?.w}x${utility?.d}`)
-const covered = photo.rooms.reduce((sum, room) => sum + room.w * room.d, 0)
-assert(covered === 1180 * 775, `도면 면적 ${covered}`)
-for (let i = 0; i < photo.rooms.length; i++) {
-  for (let j = i + 1; j < photo.rooms.length; j++) {
-    const a = photo.rooms[i]!
-    const b = photo.rooms[j]!
-    const hit = a.x < b.x + b.w - 0.5 && b.x < a.x + a.w - 0.5 && a.y < b.y + b.d - 0.5 && b.y < a.y + a.d - 0.5
-    assert(!hit, '도면 겹침')
+const unit = generateUnitPlans({ width: 1180, depth: 775, bedrooms: 2, bathrooms: 2, living: true, openKitchen: true, entrance: 'south' })
+assert(unit.plans.length >= 3, unit.message || `시안 ${unit.plans.length}`)
+for (const plan of unit.plans) {
+  assert(plan.note.length > 0, plan.label)
+  assert(plan.rooms.filter((room) => room.kind === 'bedroom').length === 2, `${plan.label} 방`)
+  assert(plan.rooms.filter((room) => room.kind === 'bathroom').length === 2, `${plan.label} 화장실`)
+  assert(plan.rooms.some((room) => room.kind === 'entrance' && room.y <= 0.5 && room.door?.wall === 'south'), `${plan.label} 현관`)
+  assert(plan.rooms.some((room) => room.kind === 'living'), `${plan.label} 거실`)
+  assert(plan.rooms.some((room) => room.kind === 'corridor'), `${plan.label} 복도`)
+  const day = plan.rooms.find((room) => room.kind === 'kitchen') ?? plan.rooms.find((room) => room.name.includes('주방'))
+  assert(day !== undefined, `${plan.label} 주방`)
+  const living = plan.rooms.find((room) => room.kind === 'living')!
+  const master = plan.rooms.find((room) => room.id === 'master')!
+  for (const room of plan.rooms.filter((item) => item.kind === 'bedroom')) {
+    assert(room.window !== null, `${plan.label} ${room.name} 창`)
+    assert(room.w * room.d <= living.w * living.d, `${plan.label} 거실이 더 큼`)
+    assert(room.w * room.d <= master.w * master.d, `${plan.label} 큰방`)
+  }
+  assert(living.window !== null, `${plan.label} 거실 창`)
+  const covered = plan.rooms.reduce((sum, room) => sum + room.w * room.d, 0)
+  assert(covered === 1180 * 775, `${plan.label} 면적 ${covered}`)
+  for (let i = 0; i < plan.rooms.length; i++) {
+    for (let j = i + 1; j < plan.rooms.length; j++) {
+      const a = plan.rooms[i]!
+      const b = plan.rooms[j]!
+      const hit = a.x < b.x + b.w - 0.5 && b.x < a.x + a.w - 0.5 && a.y < b.y + b.d - 0.5 && b.y < a.y + a.d - 0.5
+      assert(!hit, `${plan.label} 겹침`)
+    }
   }
 }
-const turned = generateUnitPlans({ width: 1180, depth: 775, bedrooms: 2, bathrooms: 2, living: true, entrance: 'east' })
+const turned = generateUnitPlans({ width: 1180, depth: 775, bedrooms: 2, bathrooms: 2, living: true, openKitchen: true, entrance: 'east' })
 const turnedEntrance = turned.plans[0]?.rooms.find((room) => room.kind === 'entrance')
 assert(turnedEntrance !== undefined && turnedEntrance.x + turnedEntrance.w === 1180, '현관이 동쪽에 붙음')
 assert(turnedEntrance?.door?.wall === 'east', '현관 문이 동쪽')
-const scaled = generateUnitPlans({ width: 1200, depth: 900, bedrooms: 2, bathrooms: 2, living: true, entrance: 'south' })
+const scaled = generateUnitPlans({ width: 1200, depth: 900, bedrooms: 3, bathrooms: 1, living: true, openKitchen: true, entrance: 'south' })
+assert(scaled.plans.length >= 2, scaled.message || '늘린 시안')
 const scaledArea = scaled.plans[0]?.rooms.reduce((sum, room) => sum + room.w * room.d, 0) ?? 0
 assert(scaledArea === 1200 * 900, `비율 면적 ${scaledArea}`)
-console.log('unit', photo.label)
+assert(scaled.plans.every((plan) => plan.rooms.filter((room) => room.kind === 'bedroom').length === 3), '방 3개')
+const tight = generateUnitPlans({ width: 400, depth: 400, bedrooms: 3, bathrooms: 2, living: true, openKitchen: true, entrance: 'south' })
+assert(tight.plans.length === 0 && tight.message.length > 0, '좁은 외곽')
+assert(unit.plans.length >= 4 && unit.plans.every((plan) => plan.rooms.some((room) => room.name === '거실·주방') && plan.rooms.every((room) => room.kind !== 'kitchen')), '모든 시안이 일체형')
+const separated = generateUnitPlans({ width: 1180, depth: 775, bedrooms: 2, bathrooms: 2, living: true, openKitchen: false, entrance: 'south' })
+assert(separated.plans.length >= 3 && separated.plans.every((plan) => plan.rooms.some((room) => room.kind === 'kitchen') && plan.rooms.every((room) => room.name !== '거실·주방')), '일체형 제외')
+assert(unit.plans.map((plan) => plan.id).join() === separated.plans.map((plan) => plan.id).join(), '같은 배치 종류')
+console.log('unit', unit.plans.map((plan) => plan.label).join(', '))
 
 const triangle = measureRoom([
   { x: 0, y: 0 },

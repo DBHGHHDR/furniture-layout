@@ -53,21 +53,24 @@ export default function App() {
 
   return (
     <div className="app">
-      <header className="top">
-        <div>
-          <p className="eyebrow">{mode === 'furniture' ? '한 방의 가구 배치' : '여러 실의 평면'}</p>
-          <h1>{mode === 'furniture' ? '최적의 가구 배치' : '평면 레이아웃'}</h1>
-          <nav className="mode-nav" aria-label="작업 모드">
-            <button type="button" className={mode === 'furniture' ? 'on' : undefined} onClick={() => setMode('furniture')}>가구 배치</button>
-            <button type="button" className={mode === 'unit' ? 'on' : undefined} onClick={() => setMode('unit')}>평면 레이아웃</button>
-          </nav>
+      <header className="site-nav">
+        <div className="brand">
+          <svg className="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
+            <circle cx="16" cy="16" r="16" fill="#1c9be8" />
+            <path fill="#fff" d="M16 7.4 24.4 14.6v9.6h-5.2v-5.6h-6.4v5.6H7.6v-9.6z" />
+          </svg>
+          <span className="brand-name">가구배치</span>
         </div>
-        <p className="lede">
-          {mode === 'furniture'
-            ? '방 모양과 문, 창문, 가구 치수를 넣으면 수면, 공부, 거실, 수납, 가장 넓은 공간 배치를 만들어 2D와 3D로 보여 줍니다.'
-            : '올려 둔 1층 도면을 외곽 크기에 맞춰 보여 줍니다. 방 이름은 더블클릭하고, 문과 창문은 끝점이나 왼쪽 수치로 바꿉니다.'}
-        </p>
+        <nav className="site-links" aria-label="작업 모드">
+          <button type="button" className={mode === 'furniture' ? 'on' : undefined} onClick={() => setMode('furniture')}>가구 배치</button>
+          <button type="button" className={mode === 'unit' ? 'on' : undefined} onClick={() => setMode('unit')}>평면 시안</button>
+        </nav>
       </header>
+      <p className="page-lead">
+        {mode === 'furniture'
+          ? '방 모양과 문, 창문, 가구 치수를 넣으면 수면, 공부, 거실, 수납, 가장 넓은 공간 배치를 만들어 2D와 3D로 보여 줍니다.'
+          : '외곽 가로·세로를 넣으면 주거 도면의 배치 조건에 맞춘 여러 시안을 보여 줍니다. 방 이름은 더블클릭하고, 문과 창문은 끝점이나 왼쪽 수치로 바꿉니다.'}
+      </p>
       {mode === 'furniture' ? (
         <div className="workspace">
           <Editor

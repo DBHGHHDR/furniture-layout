@@ -17,6 +17,7 @@ import { Fold } from './Fold.tsx'
 import { InventoryPanel } from './InventoryPanel.tsx'
 import { NumberField } from './NumberField.tsx'
 import { UnitPlan2D } from './UnitPlan2D.tsx'
+import { UnitScene3D } from './UnitScene3D.tsx'
 
 function wallSpan(room: UnitRoom, wall: Wall): number {
   return wall === 'north' || wall === 'south' ? room.w : room.d
@@ -54,6 +55,7 @@ export function UnitWorkspace({
   const [pinned, setPinned] = useState<UnitPlan[] | null>(null)
   const [edits, setEdits] = useState<Record<string, UnitPlan>>({})
   const [picked, setPicked] = useState(0)
+  const [angleKey, setAngleKey] = useState(0)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const generated = useMemo(() => generateUnitPlans(program), [program])
   const result = pinned ? { plans: pinned, message: '' } : generated
@@ -112,6 +114,15 @@ export function UnitWorkspace({
             <input type="checkbox" checked={draft.living} onChange={(event) => patch({ living: event.target.checked })} />
             거실 포함
           </label>
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={draft.openKitchen}
+              disabled={!draft.living}
+              onChange={(event) => patch({ openKitchen: event.target.checked })}
+            />
+            거실·주방 일체형
+          </label>
           <label>
             현관 위치
             <select value={draft.entrance} onChange={(event) => patch({ entrance: event.target.value as UnitProgram['entrance'] })}>
@@ -120,10 +131,9 @@ export function UnitWorkspace({
               ))}
             </select>
           </label>
-          <p className="hint">기준은 올려 둔 1층 도면입니다. 가로 1180cm, 세로 775cm에서 방 구성이 같고, 크기를 바꾸면 그 비율로 늘어납니다. 현관 위치는 평면의 방향을 바꿉니다.</p>
         </Fold>
         {!dirty && result.message && <p className="problem">{result.message}</p>}
-        {dirty && <p className="hint">입력을 바꿨습니다. 레퍼런스 보기를 누르면 그림에 반영됩니다.</p>}
+        {dirty && <p className="hint">입력을 바꿨습니다. 시안 만들기를 누르면 그림에 반영됩니다.</p>}
         <div className="generate-row">
           <button
             type="button"
@@ -136,7 +146,7 @@ export function UnitWorkspace({
               setSelectedId(null)
             }}
           >
-            레퍼런스 보기
+            시안 만들기
           </button>
         </div>
         {active && (
@@ -234,8 +244,9 @@ export function UnitWorkspace({
           }}
           onLoad={(entry) => {
             if (entry.kind !== 'unit') return
-            setDraft(entry.program)
-            setProgram(entry.program)
+            const loaded = { ...entry.program, openKitchen: entry.program.openKitchen !== false }
+            setDraft(loaded)
+            setProgram(loaded)
             setEdits({})
             setPinned([entry.plan])
             setPicked(0)
@@ -245,7 +256,7 @@ export function UnitWorkspace({
         />
       </aside>
       <main className="stage">
-        <div className="cards unit" role="tablist" aria-label="평면 레퍼런스">
+        <div className="cards unit" role="tablist" aria-label="평면 시안">
           {result.plans.map((plan, index) => (
             <button
               key={plan.id}
@@ -264,18 +275,27 @@ export function UnitWorkspace({
           ))}
         </div>
         {active && (
-          <UnitPlan2D
-            plan={active}
-            width={program.width}
-            depth={program.depth}
-            selectedId={selectedId}
-            onSelect={(room: UnitRoom) => setSelectedId(room.id)}
-            onRename={(roomId, name) => patchRoom(roomId, (room) => ({ ...room, name }))}
-            onOpening={(roomId, kind, opening) => {
-              if (kind === 'door') patchRoom(roomId, (room) => patchDoor(room, opening))
-              else patchRoom(roomId, (room) => patchWindow(room, opening))
-            }}
-          />
+          <div className="views">
+            <UnitScene3D
+              plan={active}
+              width={program.width}
+              depth={program.depth}
+              resetKey={`${active.id}-${angleKey}`}
+              onReset={() => setAngleKey((value) => value + 1)}
+            />
+            <UnitPlan2D
+              plan={active}
+              width={program.width}
+              depth={program.depth}
+              selectedId={selectedId}
+              onSelect={(room: UnitRoom) => setSelectedId(room.id)}
+              onRename={(roomId, name) => patchRoom(roomId, (room) => ({ ...room, name }))}
+              onOpening={(roomId, kind, opening) => {
+                if (kind === 'door') patchRoom(roomId, (room) => patchDoor(room, opening))
+                else patchRoom(roomId, (room) => patchWindow(room, opening))
+              }}
+            />
+          </div>
         )}
         <div className="generate-row">
           <button

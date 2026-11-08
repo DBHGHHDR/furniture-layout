@@ -5,6 +5,8 @@ import type { FurnitureType } from '../types.ts'
 import { measureRoom, type EdgeMeasure, type TriangleMeasure } from '../layout/dimensions.ts'
 import { backSegment, furnitureQuad } from '../layout/geometry.ts'
 import { boundsOf, getEdge, inwardNormal, pointAt, signedArea, snap10, type Bounds } from '../layout/polygon.ts'
+import { DoorSwing, WindowStroke } from './planMarks.tsx'
+import { usePlanZoom } from './usePlanZoom.ts'
 
 const FILL: Record<FurnitureType, string> = {
   bed: '#e6e1d6',
@@ -70,12 +72,12 @@ function pointFromClient(svg: SVGSVGElement, clientX: number, clientY: number, f
 }
 
 export function FloorPlan2D({ room, openings, layout, tool = null, onInsert, onMoveVertex, onDeleteVertex }: FloorPlanProps) {
-  const svgRef = useRef<SVGSVGElement>(null)
   const frameRef = useRef<Frame | null>(null)
   const stopDrag = useRef<(() => void) | null>(null)
   const [frozen, setFrozen] = useState<Frame | null>(null)
   const live = frameFor(room.outline)
   const frame = frozen ?? live
+  const { svgRef, viewBox, zoom, zoomBy } = usePlanZoom(frame.width, frame.height)
   const X = (x: number) => PAD + (x - frame.minX) * frame.scale
   const Y = (y: number) => PAD + (frame.maxY - y) * frame.scale
   const placed = layout?.ok ? layout.placed : []
@@ -119,11 +121,15 @@ export function FloorPlan2D({ room, openings, layout, tool = null, onInsert, onM
 
   return (
     <figure className="plan">
-      <figcaption>2D 평면도</figcaption>
+      <figcaption>
+        2D 평면도
+        <ZoomButtons zoomBy={zoomBy} />
+      </figcaption>
       <svg
         ref={svgRef}
         className={tool ? 'editing' : undefined}
-        viewBox={`0 0 ${frame.width} ${frame.height}`}
+        data-pan={tool === 'add' ? 'off' : undefined}
+        viewBox={viewBox}
         role="img"
         aria-label="가구 배치 평면도"
         onPointerDown={(event) => {
@@ -154,16 +160,17 @@ export function FloorPlan2D({ room, openings, layout, tool = null, onInsert, onM
           <FurnitureMark key={item.id} item={item} placed={placed} scale={frame.scale} X={X} Y={Y} />
         ))}
         <DimensionLayer outline={room.outline} dims={dims} ccw={ccw} X={X} Y={Y} />
+        <VertexNames outline={room.outline} X={X} Y={Y} />
         {tool && room.outline.map((point, index) => (
           <circle
             key={index}
             className="vertex"
             cx={X(point.x)}
             cy={Y(point.y)}
-            r={12}
+            r={12 / zoom}
             fill={tool === 'delete' ? '#8a3d2f' : '#215c49'}
             stroke="#fffdf8"
-            strokeWidth={2}
+            strokeWidth={2 / zoom}
             onPointerDown={(event) => {
               if (tool === 'delete') {
                 event.stopPropagation()
@@ -177,6 +184,34 @@ export function FloorPlan2D({ room, openings, layout, tool = null, onInsert, onM
       </svg>
       {layout && !layout.ok && <p className="problem">{layout.message}</p>}
     </figure>
+  )
+}
+
+function VertexNames({ outline, X, Y }: { outline: Point[]; X: (x: number) => number; Y: (y: number) => number }) {
+  const cx = outline.reduce((sum, point) => sum + point.x, 0) / outline.length
+  const cy = outline.reduce((sum, point) => sum + point.y, 0) / outline.length
+  return (
+    <g className="vertex-names" pointerEvents="none">
+      {outline.map((point, index) => {
+        const dx = point.x - cx
+        const dy = point.y - cy
+        const len = Math.hypot(dx, dy) || 1
+        const vx = dx / len
+        const vy = -dy / len
+        return (
+          <text
+            key={index}
+            x={X(point.x) + vx * 18}
+            y={Y(point.y) + vy * 18}
+            textAnchor={vx > 0.35 ? 'start' : vx < -0.35 ? 'end' : 'middle'}
+            dominantBaseline={vy > 0.35 ? 'hanging' : vy < -0.35 ? 'auto' : 'middle'}
+            className="vertex-name"
+          >
+            점 {index + 1}
+          </text>
+        )
+      })}
+    </g>
   )
 }
 
@@ -196,22 +231,20 @@ function DimensionLayer({
   const box = boundsOf(outline)
   return (
     <g pointerEvents="none">
-      {dims.edges.filter((edge) => !coveredByOverall(edge, box, dims.rectangle)).map((edge) => (
+      {dims.edges.filter((edge) => !coveredByOverall(edge, box)).map((edge) => (
         <EdgeDimension key={edge.index} edge={edge} ccw={ccw} X={X} Y={Y} />
       ))}
       {dims.corners.filter((corner) => corner.bent).map((corner) => (
         <CornerAngle key={corner.index} corner={corner} outline={outline} X={X} Y={Y} />
       ))}
       {dims.triangle && <AltitudeMark triangle={dims.triangle} edges={dims.edges} X={X} Y={Y} />}
-      {!dims.rectangle && (
-        <OverallDimensions box={box} X={X} Y={Y} />
-      )}
+      <OverallDimensions box={box} X={X} Y={Y} />
     </g>
   )
 }
 
-function coveredByOverall(edge: EdgeMeasure, box: Bounds, rectangle: boolean): boolean {
-  if (rectangle || edge.diagonal) return false
+function coveredByOverall(edge: EdgeMeasure, box: Bounds): boolean {
+  if (edge.diagonal) return false
   const flat = (left: number, right: number) => Math.abs(left - right) < 1
   const onBottom = flat(edge.a.y, box.minY) && flat(edge.b.y, box.minY)
   const onTop = flat(edge.a.y, box.maxY) && flat(edge.b.y, box.maxY)
@@ -421,7 +454,7 @@ function WindowMark({
   if (!edge) return null
   const a = pointAt(edge, win.offset)
   const b = pointAt(edge, win.offset + win.width)
-  return <line x1={X(a.x)} y1={Y(a.y)} x2={X(b.x)} y2={Y(b.y)} stroke="#9ec9e2" strokeWidth={11} />
+  return <WindowStroke a={a} b={b} X={X} Y={Y} />
 }
 
 function DoorMark({
@@ -441,32 +474,14 @@ function DoorMark({
   const closed = pointAt(edge, door.offset + door.width)
   const inward = inwardNormal(edge.a, edge.b, signedArea(room.outline) >= 0)
   const open = { x: hinge.x + inward.x * door.width, y: hinge.y + inward.y * door.width }
-  return (
-    <g>
-      <line x1={X(hinge.x)} y1={Y(hinge.y)} x2={X(closed.x)} y2={Y(closed.y)} stroke="#f4ecdf" strokeWidth={8} />
-      <path d={swingPath(hinge, closed, open, X, Y)} fill="none" stroke="#8a6232" strokeWidth={1.2} />
-      <line x1={X(hinge.x)} y1={Y(hinge.y)} x2={X(open.x)} y2={Y(open.y)} stroke="#1c1c1c" strokeWidth={1.6} />
-    </g>
-  )
+  return <DoorSwing hinge={hinge} closed={closed} open={open} X={X} Y={Y} />
 }
 
-function swingPath(
-  hinge: { x: number; y: number },
-  closed: { x: number; y: number },
-  open: { x: number; y: number },
-  X: (x: number) => number,
-  Y: (y: number) => number,
-): string {
-  const a0 = Math.atan2(closed.y - hinge.y, closed.x - hinge.x)
-  const a1 = Math.atan2(open.y - hinge.y, open.x - hinge.x)
-  let delta = a1 - a0
-  while (delta > Math.PI) delta -= Math.PI * 2
-  while (delta < -Math.PI) delta += Math.PI * 2
-  const radius = Math.hypot(closed.x - hinge.x, closed.y - hinge.y)
-  let path = `M ${X(closed.x)} ${Y(closed.y)}`
-  for (let step = 1; step <= 12; step++) {
-    const angle = a0 + (delta * step) / 12
-    path += ` L ${X(hinge.x + Math.cos(angle) * radius)} ${Y(hinge.y + Math.sin(angle) * radius)}`
-  }
-  return path
+function ZoomButtons({ zoomBy }: { zoomBy: (factor: number) => void }) {
+  return (
+    <span className="plan-zoom">
+      <button type="button" onClick={() => zoomBy(1 / 1.25)}>축소</button>
+      <button type="button" onClick={() => zoomBy(1.25)}>확대</button>
+    </span>
+  )
 }
