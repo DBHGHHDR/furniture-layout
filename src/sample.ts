@@ -1,11 +1,12 @@
+import { rectangleOutline } from './layout/polygon.ts'
 import type { Scene } from './types.ts'
 
 export function createSample(): Scene {
   return {
-    room: { width: 400, depth: 350, height: 250 },
+    room: { height: 250, outline: rectangleOutline(400, 350) },
     openings: [
-      { id: 'door-1', kind: 'door', wall: 'south', offset: 40, width: 90, sill: 0, height: 200 },
-      { id: 'window-1', kind: 'window', wall: 'north', offset: 80, width: 160, sill: 90, height: 120 },
+      { id: 'door-1', kind: 'door', edge: 0, offset: 40, width: 90, sill: 0, height: 200 },
+      { id: 'window-1', kind: 'window', edge: 2, offset: 160, width: 160, sill: 90, height: 120 },
     ],
     furniture: [
       { id: 'bed-1', type: 'bed', width: 160, depth: 200, height: 50 },

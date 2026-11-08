@@ -1,8 +1,9 @@
-import { useLayoutEffect } from 'react'
+import { useLayoutEffect, useMemo } from 'react'
 import { Canvas, useThree } from '@react-three/fiber'
 import { Edges, OrbitControls } from '@react-three/drei'
-import { NoToneMapping, type OrthographicCamera } from 'three'
-import type { FurnitureType, Opening, Placed, Room, Rotation } from '../types.ts'
+import { DoubleSide, NoToneMapping, Shape, type OrthographicCamera } from 'three'
+import type { FurnitureType, Opening, Placed, Room } from '../types.ts'
+import { boundsOf, getEdge, signedArea } from '../layout/polygon.ts'
 
 type SceneProps = {
   room: Room
@@ -42,16 +43,8 @@ export function RoomScene3D({ room, openings, placed, resetKey, onReset }: Scene
             shadow-camera-bottom={-10}
             shadow-bias={-0.0006}
           />
-          <mesh rotation={[-Math.PI / 2, 0, 0]} position={[room.width / 200, -0.08, room.depth / 200]} receiveShadow>
-            <planeGeometry args={[40, 40]} />
-            <meshStandardMaterial color="#d5e6d8" />
-          </mesh>
-          <mesh position={[room.width / 200, -0.03, room.depth / 200]} receiveShadow>
-            <boxGeometry args={[room.width / 100 + 0.28, 0.06, room.depth / 100 + 0.28]} />
-            <meshStandardMaterial color="#e8d5b6" roughness={0.92} />
-          </mesh>
+          <Floor room={room} />
           <Walls room={room} openings={openings} />
-          <Doors room={room} openings={openings} />
           {placed.map((item) => (
             <FurniturePiece key={item.id} item={item} />
           ))}
@@ -64,6 +57,34 @@ export function RoomScene3D({ room, openings, placed, resetKey, onReset }: Scene
   )
 }
 
+function Floor({ room }: { room: Room }) {
+  const box = boundsOf(room.outline)
+  const shape = useMemo(() => {
+    const next = new Shape()
+    const outline = signedArea(room.outline) >= 0 ? room.outline : [...room.outline].reverse()
+    outline.forEach((point, index) => {
+      const x = point.x / 100
+      const y = -point.y / 100
+      if (index === 0) next.moveTo(x, y)
+      else next.lineTo(x, y)
+    })
+    next.closePath()
+    return next
+  }, [room.outline])
+  return (
+    <group>
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[(box.minX + box.maxX) / 200, -0.08, (box.minY + box.maxY) / 200]} receiveShadow>
+        <planeGeometry args={[40, 40]} />
+        <meshStandardMaterial color="#d5e6d8" />
+      </mesh>
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.03, 0]} receiveShadow>
+        <shapeGeometry args={[shape]} />
+        <meshStandardMaterial color="#e8d5b6" roughness={0.92} side={DoubleSide} />
+      </mesh>
+    </group>
+  )
+}
+
 function CameraRig({ room, resetKey }: { room: Room; resetKey: number }) {
   const camera = useThree((state) => state.camera) as OrthographicCamera
   const size = useThree((state) => state.size)
@@ -71,137 +92,135 @@ function CameraRig({ room, resetKey }: { room: Room; resetKey: number }) {
     target: { set: (x: number, y: number, z: number) => void }
     update: () => void
   } | null
+  const box = boundsOf(room.outline)
 
   useLayoutEffect(() => {
     if (size.height < 20) return
     const frame = requestAnimationFrame(() => {
-    const cx = room.width / 200
-    const cy = room.height / 500
-    const cz = room.depth / 200
-    const span = Math.max(room.width, room.depth) / 100
-    const dist = span * 0.78
-    camera.position.set(cx - dist, span * 1.85, cz - dist)
-    camera.near = -80
-    camera.far = 80
-    camera.zoom = Math.min(size.width, size.height) / (span * 1.72)
-    camera.updateProjectionMatrix()
-    camera.lookAt(cx, cy, cz)
-    if (controls) {
-      controls.target.set(cx, cy, cz)
-      controls.update()
-    }
+      const cx = (box.minX + box.maxX) / 200
+      const cy = room.height / 500
+      const cz = (box.minY + box.maxY) / 200
+      const span = Math.max(box.width, box.depth) / 100
+      const dist = span * 0.78
+      camera.position.set(cx - dist, span * 1.85, cz - dist)
+      camera.near = -80
+      camera.far = 80
+      camera.zoom = Math.min(size.width, size.height) / (span * 1.72)
+      camera.updateProjectionMatrix()
+      camera.lookAt(cx, cy, cz)
+      if (controls) {
+        controls.target.set(cx, cy, cz)
+        controls.update()
+      }
     })
     return () => cancelAnimationFrame(frame)
-  }, [camera, controls, resetKey, room.depth, room.height, room.width, size.height, size.width])
+  }, [box.depth, box.maxX, box.maxY, box.minX, box.minY, box.width, camera, controls, resetKey, room.height, size.height, size.width])
 
   return null
 }
 
-type Spec = {
-  key: string
-  position: [number, number, number]
-  size: [number, number, number]
-  color: string
-  glass?: boolean
-}
-
 function Walls({ room, openings }: { room: Room; openings: Opening[] }) {
-  const specs = buildWalls(room, openings)
+  const ccw = signedArea(room.outline) >= 0
   return (
     <group>
-      {specs.map((spec) => (
-        <mesh key={spec.key} position={spec.position} castShadow={!spec.glass} receiveShadow>
-          <boxGeometry args={spec.size} />
-          <meshStandardMaterial
-            color={spec.color}
-            transparent={Boolean(spec.glass)}
-            opacity={spec.glass ? 0.38 : 1}
-            roughness={spec.glass ? 0.05 : 0.78}
-          />
-          {!spec.glass && <Edges color="#1a1a1a" threshold={15} />}
-        </mesh>
+      {room.outline.map((_, index) => (
+        <EdgeWall key={index} room={room} edgeIndex={index} openings={openings.filter((opening) => opening.edge === index)} ccw={ccw} />
       ))}
     </group>
   )
 }
 
-function buildWalls(room: Room, openings: Opening[]): Spec[] {
-  const specs: Spec[] = []
-  const south = gaps(room, openings, 'south')
-  const north = gaps(room, openings, 'north')
-  const west = gaps(room, openings, 'west')
-  const east = gaps(room, openings, 'east')
-  fillX(specs, 'south', -THICK, 0, -THICK, room.width + THICK, room.height, south)
-  fillX(specs, 'north', room.depth, room.depth + THICK, -THICK, room.width + THICK, room.height, north)
-  fillZ(specs, 'west', -THICK, 0, 0.4, room.depth - 0.4, room.height, west)
-  fillZ(specs, 'east', room.width, room.width + THICK, 0.4, room.depth - 0.4, room.height, east)
-  return specs
+type LocalBox = {
+  key: string
+  x0: number
+  y0: number
+  z0: number
+  x1: number
+  y1: number
+  z1: number
+  color: string
+  glass?: boolean
 }
 
-type Gap = { start: number; end: number; bottom: number; top: number; kind: 'door' | 'window' }
+function EdgeWall({
+  room,
+  edgeIndex,
+  openings,
+  ccw,
+}: {
+  room: Room
+  edgeIndex: number
+  openings: Opening[]
+  ccw: boolean
+}) {
+  const edge = getEdge(room.outline, edgeIndex)
+  if (!edge || edge.length < 1) return null
+  const angle = Math.atan2(edge.dy, edge.dx)
+  const boxes = buildEdgeBoxes(room, edge.length, openings, ccw, `e${edgeIndex}`)
+  return (
+    <group position={[edge.a.x / 100, 0, edge.a.y / 100]} rotation={[0, -angle, 0]}>
+      {boxes.map((box) => (
+        <mesh
+          key={box.key}
+          position={[((box.x0 + box.x1) / 2) / 100, ((box.y0 + box.y1) / 2) / 100, ((box.z0 + box.z1) / 2) / 100]}
+          castShadow={!box.glass}
+          receiveShadow
+        >
+          <boxGeometry args={[(box.x1 - box.x0) / 100, (box.y1 - box.y0) / 100, (box.z1 - box.z0) / 100]} />
+          <meshStandardMaterial color={box.color} transparent={Boolean(box.glass)} opacity={box.glass ? 0.38 : 1} roughness={box.glass ? 0.05 : 0.78} />
+          {!box.glass && <Edges color="#1a1a1a" threshold={15} />}
+        </mesh>
+      ))}
+      {openings.filter((opening) => opening.kind === 'door').map((door) => (
+        <group key={door.id} position={[door.offset / 100, 0, 0]} rotation={[0, ccw ? -0.55 : 0.55, 0]}>
+          <mesh position={[door.width / 200, Math.min(200, room.height) / 200, 0.02]} castShadow>
+            <boxGeometry args={[door.width / 100, Math.min(200, room.height) / 100, 0.04]} />
+            <meshStandardMaterial color="#fbfbfa" roughness={0.7} />
+            <Edges color="#1a1a1a" threshold={15} />
+          </mesh>
+        </group>
+      ))}
+    </group>
+  )
+}
 
-function gaps(room: Room, openings: Opening[], wall: Opening['wall']): Gap[] {
-  return openings
-    .filter((opening) => opening.wall === wall)
+function buildEdgeBoxes(room: Room, length: number, openings: Opening[], ccw: boolean, prefix: string): LocalBox[] {
+  const boxes: LocalBox[] = []
+  const z0 = ccw ? -THICK : 0
+  const z1 = ccw ? 0 : THICK
+  const holes = openings
     .map((opening) => ({
       start: opening.offset,
       end: opening.offset + opening.width,
       bottom: opening.kind === 'door' ? 0 : opening.sill,
-      top: opening.kind === 'door' ? Math.min(200, room.height) : opening.sill + opening.height,
+      top: opening.kind === 'door' ? Math.min(200, room.height) : Math.min(room.height, opening.sill + opening.height),
       kind: opening.kind,
     }))
+    .filter((gap) => gap.end > gap.start)
     .sort((a, b) => a.start - b.start)
+  let cursor = 0
+  holes.forEach((gap, index) => {
+    addLocal(boxes, `${prefix}-pier-${index}`, cursor, 0, z0, gap.start, room.height, z1, WALL)
+    if (gap.bottom > 0.4) addLocal(boxes, `${prefix}-sill-${index}`, gap.start, 0, z0, gap.end, gap.bottom, z1, WALL)
+    if (room.height - gap.top > 0.4) addLocal(boxes, `${prefix}-head-${index}`, gap.start, gap.top, z0, gap.end, room.height, z1, WALL)
+    if (gap.kind === 'window') addWindow(boxes, `${prefix}-win-${index}`, gap, z0, z1)
+    cursor = gap.end
+  })
+  addLocal(boxes, `${prefix}-end`, cursor, 0, z0, length, room.height, z1, WALL)
+  return boxes
 }
 
-function fillX(
-  out: Spec[],
-  prefix: string,
+function addWindow(
+  out: LocalBox[],
+  key: string,
+  gap: { start: number; end: number; bottom: number; top: number },
   z0: number,
   z1: number,
-  xMin: number,
-  xMax: number,
-  height: number,
-  holes: Gap[],
 ) {
-  let cursor = xMin
-  holes.forEach((gap, index) => {
-    addBox(out, `${prefix}-pier-${index}`, cursor, 0, z0, gap.start, height, z1, WALL)
-    if (gap.bottom > 0.4) addBox(out, `${prefix}-sill-${index}`, gap.start, 0, z0, gap.end, gap.bottom, z1, WALL)
-    if (height - gap.top > 0.4) addBox(out, `${prefix}-head-${index}`, gap.start, gap.top, z0, gap.end, height, z1, WALL)
-    if (gap.kind === 'window') addWindow(out, `${prefix}-win-${index}`, gap, z0, z1, 'x')
-    cursor = gap.end
-  })
-  addBox(out, `${prefix}-end`, cursor, 0, z0, xMax, height, z1, WALL)
-}
-
-function fillZ(
-  out: Spec[],
-  prefix: string,
-  x0: number,
-  x1: number,
-  zMin: number,
-  zMax: number,
-  height: number,
-  holes: Gap[],
-) {
-  let cursor = zMin
-  holes.forEach((gap, index) => {
-    addBox(out, `${prefix}-pier-${index}`, x0, 0, cursor, x1, height, gap.start, WALL)
-    if (gap.bottom > 0.4) addBox(out, `${prefix}-sill-${index}`, x0, 0, gap.start, x1, gap.bottom, gap.end, WALL)
-    if (height - gap.top > 0.4) addBox(out, `${prefix}-head-${index}`, x0, gap.top, gap.start, x1, height, gap.end, WALL)
-    if (gap.kind === 'window') addWindow(out, `${prefix}-win-${index}`, gap, x0, x1, 'z')
-    cursor = gap.end
-  })
-  addBox(out, `${prefix}-end`, x0, 0, cursor, x1, height, zMax, WALL)
-}
-
-function addWindow(out: Spec[], key: string, gap: Gap, a0: number, a1: number, along: 'x' | 'z') {
   const inset = 3.5
-  const mid = (a0 + a1) / 2
-  const glass = 1.6
-  const bar = (part: string, u0: number, v0: number, u1: number, v1: number) => {
-    if (along === 'x') addBox(out, `${key}-${part}`, u0, v0, mid - 2, u1, v1, mid + 2, FRAME)
-    else addBox(out, `${key}-${part}`, mid - 2, v0, u0, mid + 2, v1, u1, FRAME)
+  const mid = (z0 + z1) / 2
+  const bar = (part: string, x0: number, y0: number, x1: number, y1: number) => {
+    addLocal(out, `${key}-${part}`, x0, y0, mid - 2, x1, y1, mid + 2, FRAME)
   }
   bar('left', gap.start, gap.bottom, gap.start + inset, gap.top)
   bar('right', gap.end - inset, gap.bottom, gap.end, gap.top)
@@ -209,15 +228,11 @@ function addWindow(out: Spec[], key: string, gap: Gap, a0: number, a1: number, a
   bar('top', gap.start + inset, gap.top - inset, gap.end - inset, gap.top)
   const center = (gap.start + gap.end) / 2
   bar('mullion', center - 1.1, gap.bottom + inset, center + 1.1, gap.top - inset)
-  if (along === 'x') {
-    addBox(out, `${key}-glass`, gap.start + inset, gap.bottom + inset, mid - glass / 2, gap.end - inset, gap.top - inset, mid + glass / 2, '#c5dced', true)
-  } else {
-    addBox(out, `${key}-glass`, mid - glass / 2, gap.bottom + inset, gap.start + inset, mid + glass / 2, gap.top - inset, gap.end - inset, '#c5dced', true)
-  }
+  addLocal(out, `${key}-glass`, gap.start + inset, gap.bottom + inset, mid - 0.8, gap.end - inset, gap.top - inset, mid + 0.8, '#c5dced', true)
 }
 
-function addBox(
-  out: Spec[],
+function addLocal(
+  out: LocalBox[],
   key: string,
   x0: number,
   y0: number,
@@ -228,66 +243,19 @@ function addBox(
   color: string,
   glass = false,
 ) {
-  const sx = x1 - x0
-  const sy = y1 - y0
-  const sz = z1 - z0
-  if (sx < 0.3 || sy < 0.3 || sz < 0.3) return
-  out.push({
-    key,
-    position: [((x0 + x1) / 2) / 100, ((y0 + y1) / 2) / 100, ((z0 + z1) / 2) / 100],
-    size: [sx / 100, sy / 100, sz / 100],
-    color,
-    glass,
-  })
-}
-
-function Doors({ room, openings }: { room: Room; openings: Opening[] }) {
-  return (
-    <group>
-      {openings.filter((opening) => opening.kind === 'door').map((door) => (
-        <DoorLeaf key={door.id} room={room} door={door} />
-      ))}
-    </group>
-  )
-}
-
-function DoorLeaf({ room, door }: { room: Room; door: Opening }) {
-  const height = Math.min(200, room.height) / 100
-  const width = door.width / 100
-  const hingeX = door.wall === 'east' ? room.width / 100 : door.wall === 'west' ? 0 : door.offset / 100
-  const hingeZ = door.wall === 'north' ? room.depth / 100 : door.wall === 'south' ? 0 : door.offset / 100
-  const rotation =
-    door.wall === 'south' ? -0.55
-      : door.wall === 'north' ? 0.55
-        : door.wall === 'west' ? -Math.PI / 2 + 0.5
-          : -Math.PI / 2 - 0.5
-  return (
-    <group position={[hingeX, 0, hingeZ]} rotation={[0, rotation, 0]}>
-      <mesh position={[width / 2, height / 2, 0.02]} castShadow>
-        <boxGeometry args={[width, height, 0.04]} />
-        <meshStandardMaterial color="#fbfbfa" roughness={0.7} />
-        <Edges color="#1a1a1a" threshold={15} />
-      </mesh>
-    </group>
-  )
+  if (x1 - x0 < 0.3 || y1 - y0 < 0.3 || Math.abs(z1 - z0) < 0.3) return
+  out.push({ key, x0, y0, z0, x1, y1, z1, color, glass })
 }
 
 function FurniturePiece({ item }: { item: Placed }) {
   return (
     <group
       position={[(item.x + item.w / 2) / 100, 0, (item.y + item.d / 2) / 100]}
-      rotation={[0, rotationY(item.rotation), 0]}
+      rotation={[0, (item.rotation * Math.PI) / 180, 0]}
     >
       <Model type={item.type} w={item.nominalWidth / 100} d={item.nominalDepth / 100} h={item.h / 100} />
     </group>
   )
-}
-
-function rotationY(rotation: Rotation): number {
-  if (rotation === 90) return Math.PI / 2
-  if (rotation === 180) return Math.PI
-  if (rotation === 270) return -Math.PI / 2
-  return 0
 }
 
 function Model({ type, w, d, h }: { type: FurnitureType; w: number; d: number; h: number }) {

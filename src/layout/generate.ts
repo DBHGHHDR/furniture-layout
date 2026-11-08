@@ -1,11 +1,12 @@
-import type { Furniture, FurnitureType, GoalId, LayoutResult, Opening, Placed, Rect, Scene } from '../types.ts'
-import { FURNITURE_LABEL, FURNITURE_OBJECT, FURNITURE_SUBJECT, GOALS, ROTATIONS, WALL_LABEL, oppositeWall } from '../types.ts'
+import type { Furniture, FurnitureType, GoalId, LayoutResult, Opening, Placed, Scene } from '../types.ts'
+import { FURNITURE_LABEL, FURNITURE_OBJECT, FURNITURE_SUBJECT, GOALS, ROTATIONS } from '../types.ts'
 import {
-  backWall,
+  backEdge,
   beside,
   centrality,
   doorCenters,
-  doorClearances,
+  doorQuads,
+  flushPlacements,
   gridCandidates,
   isFlush,
   isValid,
@@ -15,10 +16,10 @@ import {
   placeInFront,
   spanOverlap,
   wallCandidates,
-  wallLength,
   centerOf,
 } from './geometry.ts'
 import { largestEmpty } from './openArea.ts'
+import { boundsOf, edgeTitle, getEdge, oppositeEdge, selfIntersects, signedArea, type Quad } from './polygon.ts'
 
 const BEAM = 8
 const KEEP = 12
@@ -45,33 +46,48 @@ function windowsOf(openings: Opening[]): Opening[] {
 
 export function validate(scene: Scene): string | null {
   const { room, openings, furniture } = scene
-  if (
-    ![room.width, room.depth, room.height].every((value) => Number.isFinite(value) && value >= 100 && value <= 2000)
-  ) {
+  const outline = room.outline
+  if (!Array.isArray(outline) || outline.length < 3 || outline.length > 12) {
+    return '방 모양은 점 3개 이상 12개 이하여야 합니다.'
+  }
+  if (outline.some((point) => !Number.isFinite(point.x) || !Number.isFinite(point.y))) {
+    return '방 모양의 점 좌표를 확인해 주세요.'
+  }
+  const box = boundsOf(outline)
+  if (![box.width, box.depth, room.height].every((value) => Number.isFinite(value) && value >= 100 && value <= 2000)) {
     return '방의 가로, 세로, 층고는 100cm 이상 2000cm 이하여야 합니다.'
   }
+  for (let index = 0; index < outline.length; index++) {
+    const edge = getEdge(outline, index)
+    if (!edge || edge.length < 40) return '방 모양의 각 변은 40cm 이상이어야 합니다.'
+  }
+  if (selfIntersects(outline)) return '방 모양이 서로 교차합니다.'
+  if (Math.abs(signedArea(outline)) < 500) return '방 넓이가 너무 작습니다.'
 
-  const grouped = new Map<string, Opening[]>()
+  const grouped = new Map<number, Opening[]>()
   for (const opening of openings) {
+    if (!Number.isInteger(opening.edge) || opening.edge < 0 || opening.edge >= outline.length) {
+      return '문이나 창문이 없는 변을 가리킵니다.'
+    }
     if (!Number.isFinite(opening.offset) || !Number.isFinite(opening.width) || opening.width <= 0 || opening.offset < 0) {
       return '문과 창문의 위치와 폭을 확인해 주세요.'
     }
-    const length = wallLength(room, opening.wall)
+    const length = getEdge(outline, opening.edge)?.length ?? 0
     if (opening.offset + opening.width > length + 0.1) return '문이나 창문이 벽 길이를 벗어났습니다.'
     if (opening.kind === 'window') {
       if (opening.sill < 0 || opening.height <= 0) return '창문 높이를 확인해 주세요.'
       if (opening.sill + opening.height > room.height + 0.1) return '창문 아래와 창문 높이를 더하면 층고를 넘습니다.'
     }
-    const list = grouped.get(opening.wall) ?? []
+    const list = grouped.get(opening.edge) ?? []
     list.push(opening)
-    grouped.set(opening.wall, list)
+    grouped.set(opening.edge, list)
   }
   for (const list of grouped.values()) {
     const sorted = [...list].sort((a, b) => a.offset - b.offset)
     for (let index = 1; index < sorted.length; index++) {
       const prev = sorted[index - 1]!
       const next = sorted[index]!
-      if (next.offset < prev.offset + prev.width - 0.1) return '같은 벽에서 문과 창문이 겹칩니다.'
+      if (next.offset < prev.offset + prev.width - 0.1) return '같은 변에서 문과 창문이 겹칩니다.'
     }
   }
 
@@ -81,8 +97,8 @@ export function validate(scene: Scene): string | null {
     }
     if (item.height > room.height) return `${FURNITURE_LABEL[item.type]} 높이가 층고보다 큽니다.`
     const fits =
-      (item.width <= room.width && item.depth <= room.depth) ||
-      (item.depth <= room.width && item.width <= room.depth)
+      (item.width <= box.width && item.depth <= box.depth) ||
+      (item.depth <= box.width && item.width <= box.depth)
     if (!fits) return `${FURNITURE_SUBJECT[item.type]} 방보다 커서 들어가지 않습니다.`
   }
   return null
@@ -185,15 +201,15 @@ function topOptions(options: Option[], limit: number): Option[] {
 
 function scoreBed(goal: GoalId, placed: Placed, room: Scene['room'], openings: Opening[]): number {
   let score = 0
-  const wall = backWall(placed, room)
-  score += wall ? 700 : -450
+  const edge = backEdge(placed, room)
+  score += edge !== null ? 700 : -450
   const doors = doorCenters(room, openings)
   const distance = nearestDoorDistance(centerOf(placed), doors)
   if (goal === 'sleep') score += distance * 0.9
   const windows = windowsOf(openings)
-  if (wall && windows.some((win) => win.wall === wall && spanOverlap(placed, win)) && goal === 'sleep') score -= 240
+  if (edge !== null && windows.some((win) => win.edge === edge && spanOverlap(placed, win, room.outline)) && goal === 'sleep') score -= 240
   if (goal === 'study') {
-    if (wall && windows.some((win) => oppositeWall(win.wall) === wall)) score += 420
+    if (edge !== null && windows.some((win) => oppositeEdge(room.outline, win.edge) === edge)) score += 420
     score += minWindowDistance(placed, windows, room) * 0.45
   }
   if (goal === 'living') score -= centrality(placed, room) * 220
@@ -204,10 +220,10 @@ function scoreDesk(goal: GoalId, placed: Placed, room: Scene['room'], openings: 
   let score = chairPlaced ? 320 : -240
   const windows = windowsOf(openings)
   const distance = minWindowDistance(placed, windows, room)
-  const wall = backWall(placed, room)
+  const edge = backEdge(placed, room)
   if (goal === 'study') {
     score += 980 - distance * 2.4
-    if (wall && windows.some((win) => win.wall === wall && spanOverlap(placed, win))) score += 480
+    if (edge !== null && windows.some((win) => win.edge === edge && spanOverlap(placed, win, room.outline))) score += 480
   } else if (isFlush(placed, room)) {
     score += 70
   }
@@ -217,8 +233,8 @@ function scoreDesk(goal: GoalId, placed: Placed, room: Scene['room'], openings: 
 
 function scoreSofa(goal: GoalId, placed: Placed, room: Scene['room'], tablePlaced: boolean): number {
   let score = tablePlaced ? 520 : -60
-  const wall = backWall(placed, room)
-  if (wall) score += goal === 'living' ? 760 : 180
+  const edge = backEdge(placed, room)
+  if (edge !== null) score += goal === 'living' ? 760 : 180
   else score -= 160
   if (goal === 'living') score -= centrality(placed, room) * 80
   return score
@@ -251,7 +267,7 @@ function positionsFor(room: Scene['room'], w: number, d: number, allowGrid: bool
 function collectPlacements(
   item: Furniture,
   room: Scene['room'],
-  doors: Rect[],
+  doors: Quad[],
   windows: Opening[],
   existing: Placed[],
   goal: GoalId,
@@ -259,15 +275,22 @@ function collectPlacements(
   requireBack: boolean,
 ): Option[] {
   const options: Option[] = []
+  const pushPlaced = (placed: Placed) => {
+    if (requireBack && backEdge(placed, room) === null) return
+    if (!isValid(placed, room, doors, windows, existing)) return
+    const value = goal === 'open' ? largestEmpty(room, existing.concat(placed)).area : score(placed)
+    options.push({ placed: [placed], score: value })
+  }
   const consider = (grid: boolean) => {
     for (const rotation of ROTATIONS) {
       const size = rotation === 90 || rotation === 270 ? { w: item.depth, d: item.width } : { w: item.width, d: item.depth }
       for (const point of positionsFor(room, size.w, size.d, grid)) {
-        const placed = makePlaced(item, point.x, point.y, rotation)
-        if (requireBack && !backWall(placed, room)) continue
-        if (!isValid(placed, room, doors, windows, existing)) continue
-        const value = goal === 'open' ? largestEmpty(room, existing.concat(placed)).area : score(placed)
-        options.push({ placed: [placed], score: value })
+        pushPlaced(makePlaced(item, point.x, point.y, rotation))
+      }
+    }
+    if (!grid) {
+      for (const point of flushPlacements(item, room)) {
+        pushPlaced(makePlaced(item, point.x, point.y, point.rotation))
       }
     }
   }
@@ -284,7 +307,7 @@ function expandStep(
   goal: GoalId,
   state: Beam,
   scene: Scene,
-  doors: Rect[],
+  doors: Quad[],
   windows: Opening[],
 ): Expansion {
   const { room } = scene
@@ -392,11 +415,11 @@ function describe(goal: GoalId, placed: Placed[], scene: Scene, areaM2: number):
   if (goal === 'sleep') {
     const bed = placed.find((item) => item.type === 'bed')
     if (!bed) return '침대가 없습니다. 나머지 가구는 벽에 붙여 두었습니다.'
-    const wall = backWall(bed, room)
+    const edge = backEdge(bed, room)
     const distance = Math.round(nearestDoorDistance(centerOf(bed), doors))
     const nightstand = placed.find((item) => item.type === 'nightstand' && beside(item, bed, 16))
-    const head = wall
-      ? `침대 머리맡이 ${WALL_LABEL[wall]} 벽에 닿아 있습니다.`
+    const head = edge !== null
+      ? `침대 머리맡이 ${edgeTitle(room.outline, edge)} 벽에 닿아 있습니다.`
       : '침대를 방 안에 두었습니다.'
     const doorText = doors.length > 0 ? ` 문과는 약 ${distance}cm 떨어져 있습니다.` : ''
     const side = nightstand ? ' 협탁은 침대 옆에 있습니다.' : ''
@@ -420,8 +443,8 @@ function describe(goal: GoalId, placed: Placed[], scene: Scene, areaM2: number):
     const sofa = placed.find((item) => item.type === 'sofa')
     const table = placed.find((item) => item.type === 'table')
     if (!sofa) return '소파가 없습니다. 가구를 벽에 붙여 가운데 통행을 남겼습니다.'
-    const wall = backWall(sofa, room)
-    const base = wall ? `소파 등을 ${WALL_LABEL[wall]} 벽에 붙였습니다.` : '소파를 방 안에 두었습니다.'
+    const edge = backEdge(sofa, room)
+    const base = edge !== null ? `소파 등을 ${edgeTitle(room.outline, edge)} 벽에 붙였습니다.` : '소파를 방 안에 두었습니다.'
     if (table && beside(table, sofa, 40)) return `${base} 테이블을 소파 앞에 두어 마주 보는 자리를 만들었습니다.`
     return base
   }
@@ -433,7 +456,7 @@ function describe(goal: GoalId, placed: Placed[], scene: Scene, areaM2: number):
 export function solve(goal: GoalId, scene: Scene): LayoutResult {
   const error = validate(scene)
   if (error) return fail(goal, error)
-  const doors = doorClearances(scene.room, scene.openings)
+  const doors = doorQuads(scene.room, scene.openings)
   const windows = windowsOf(scene.openings)
   const steps = buildSteps(goal, scene.furniture)
   let beam: Beam[] = [{ placed: [], score: 0 }]

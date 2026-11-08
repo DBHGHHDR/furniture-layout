@@ -1,18 +1,23 @@
-import { blocksWindow, doorClearances, rectsOverlap } from './geometry.ts'
-import { generateAll } from './generate.ts'
+import { beside, blocksWindow, doorQuads, furnitureQuad, isValid, makePlaced } from './geometry.ts'
+import { generateAll, validate } from './generate.ts'
+import { measureRoom } from './dimensions.ts'
+import { generateUnitPlans } from './unitPlan.ts'
 import { largestEmpty } from './openArea.ts'
+import { rectangleOutline } from './polygon.ts'
 import { createSample } from '../sample.ts'
-import { backWall, beside } from './geometry.ts'
+import { backEdge } from './geometry.ts'
 import type { Scene } from '../types.ts'
+import { quadsOverlap } from './polygon.ts'
 
 function assert(condition: boolean, message: string): void {
   if (!condition) throw new Error(message)
 }
 
-const empty = largestEmpty({ width: 400, depth: 350, height: 250 }, [])
+const box = { height: 250, outline: rectangleOutline(400, 350) }
+const empty = largestEmpty(box, [])
 assert(empty.area === 140000, `빈 방 면적 ${empty.area}`)
 
-const corner = largestEmpty({ width: 400, depth: 350, height: 250 }, [{ x: 0, y: 0, w: 160, d: 200 }])
+const corner = largestEmpty(box, [{ x: 0, y: 0, w: 160, d: 200 }])
 assert(corner.area === 84000, `구석 침대 빈 면적 ${corner.area}`)
 
 const sample = createSample()
@@ -27,12 +32,12 @@ for (const result of results) {
   assert(result.placed.length === sample.furniture.length, `${result.goal} 가구 수 ${result.placed.length}`)
   for (let i = 0; i < result.placed.length; i++) {
     for (let j = i + 1; j < result.placed.length; j++) {
-      assert(!rectsOverlap(result.placed[i]!, result.placed[j]!), `${result.goal} 겹침`)
+      assert(!quadsOverlap(furnitureQuad(result.placed[i]!), furnitureQuad(result.placed[j]!)), `${result.goal} 겹침`)
     }
   }
-  const doors = doorClearances(sample.room, sample.openings)
+  const doors = doorQuads(sample.room, sample.openings)
   for (const item of result.placed) {
-    for (const door of doors) assert(!rectsOverlap(item, door), `${result.goal} 문 여유 침범 ${item.type}`)
+    for (const door of doors) assert(!quadsOverlap(furnitureQuad(item), door), `${result.goal} 문 여유 침범 ${item.type}`)
     const windows = sample.openings.filter((opening) => opening.kind === 'window')
     assert(!blocksWindow(item, sample.room, windows), `${result.goal} 창문 가림 ${item.type}`)
   }
@@ -45,7 +50,7 @@ for (const result of results) {
 
 const sleep = results.find((result) => result.goal === 'sleep')!
 const bed = sleep.placed.find((item) => item.type === 'bed')!
-assert(backWall(bed, sample.room) !== null, '수면 침대 머리맡')
+assert(backEdge(bed, sample.room) !== null, '수면 침대 머리맡')
 
 const study = results.find((result) => result.goal === 'study')!
 const desk = study.placed.find((item) => item.type === 'desk')!
@@ -75,11 +80,90 @@ console.log('living', livingGoal.ok, livingGoal.message)
 assert(livingGoal.ok, livingGoal.message)
 const sofa = livingGoal.placed.find((item) => item.type === 'sofa')!
 const table = livingGoal.placed.find((item) => item.type === 'table')!
-assert(backWall(sofa, living.room) !== null, '소파 등')
+assert(backEdge(sofa, living.room) !== null, '소파 등')
 assert(beside(sofa, table, 40), '테이블 앞')
 const night = livingResults.find((result) => result.goal === 'sleep')!
 const sleepBed = night.placed.find((item) => item.type === 'bed')!
 const stand = night.placed.find((item) => item.type === 'nightstand')!
 assert(beside(sleepBed, stand, 16), '협탁')
+
+const bowtie = validate({
+  room: {
+    height: 250,
+    outline: [
+      { x: 0, y: 0 },
+      { x: 300, y: 200 },
+      { x: 0, y: 200 },
+      { x: 300, y: 0 },
+    ],
+  },
+  openings: [],
+  furniture: [],
+})
+assert(Boolean(bowtie?.includes('교차')), bowtie ?? '교차 검사 실패')
+
+const lRoom = {
+  height: 250,
+  outline: [
+    { x: 0, y: 0 },
+    { x: 300, y: 0 },
+    { x: 300, y: 150 },
+    { x: 150, y: 150 },
+    { x: 150, y: 300 },
+    { x: 0, y: 300 },
+  ],
+}
+const outside = makePlaced({ id: 'out', type: 'nightstand', width: 80, depth: 80, height: 40 }, 200, 200, 0)
+const inside = makePlaced({ id: 'in', type: 'nightstand', width: 80, depth: 80, height: 40 }, 10, 10, 0)
+assert(!isValid(outside, lRoom, [], [], []), '윤곽 밖 가구')
+assert(isValid(inside, lRoom, [], [], []), '윤곽 안 가구')
+
+const unit = generateUnitPlans({ width: 1180, depth: 775, bedrooms: 2, bathrooms: 2, living: true, entrance: 'south' })
+assert(unit.plans.length === 1, unit.message || '평면 없음')
+const photo = unit.plans[0]!
+assert(photo.label === '1층 평면도', photo.label)
+assert(photo.note.length > 0, '도면 설명')
+for (const name of ['다용도실', '주방', '거실', '드레스룸', '큰방', '현관', '작은방']) {
+  assert(photo.rooms.some((room) => room.name === name), name)
+}
+assert(photo.rooms.filter((room) => room.kind === 'bedroom').length === 2, '침실 수')
+assert(photo.rooms.filter((room) => room.kind === 'bathroom').length === 2, '화장실 수')
+const utility = photo.rooms.find((room) => room.name === '다용도실')
+assert(utility !== undefined && utility.w === 180 && utility.d === 410, `다용도실 ${utility?.w}x${utility?.d}`)
+const covered = photo.rooms.reduce((sum, room) => sum + room.w * room.d, 0)
+assert(covered === 1180 * 775, `도면 면적 ${covered}`)
+for (let i = 0; i < photo.rooms.length; i++) {
+  for (let j = i + 1; j < photo.rooms.length; j++) {
+    const a = photo.rooms[i]!
+    const b = photo.rooms[j]!
+    const hit = a.x < b.x + b.w - 0.5 && b.x < a.x + a.w - 0.5 && a.y < b.y + b.d - 0.5 && b.y < a.y + a.d - 0.5
+    assert(!hit, '도면 겹침')
+  }
+}
+const turned = generateUnitPlans({ width: 1180, depth: 775, bedrooms: 2, bathrooms: 2, living: true, entrance: 'east' })
+const turnedEntrance = turned.plans[0]?.rooms.find((room) => room.kind === 'entrance')
+assert(turnedEntrance !== undefined && turnedEntrance.x + turnedEntrance.w === 1180, '현관이 동쪽에 붙음')
+assert(turnedEntrance?.door?.wall === 'east', '현관 문이 동쪽')
+const scaled = generateUnitPlans({ width: 1200, depth: 900, bedrooms: 2, bathrooms: 2, living: true, entrance: 'south' })
+const scaledArea = scaled.plans[0]?.rooms.reduce((sum, room) => sum + room.w * room.d, 0) ?? 0
+assert(scaledArea === 1200 * 900, `비율 면적 ${scaledArea}`)
+console.log('unit', photo.label)
+
+const triangle = measureRoom([
+  { x: 0, y: 0 },
+  { x: 400, y: 0 },
+  { x: 0, y: 300 },
+])
+assert(triangle.triangle !== null, '삼각형')
+assert(Math.abs(triangle.triangle!.base - 400) < 1, `밑변 ${triangle.triangle?.base}`)
+assert(Math.abs(triangle.triangle!.height - 300) < 1, `높이 ${triangle.triangle?.height}`)
+assert(triangle.edges.some((edge) => edge.diagonal && Math.abs(edge.run - 400) < 1 && Math.abs(edge.rise - 300) < 1), '대각 성분')
+const bend = triangle.corners.find((corner) => corner.index === 1)
+assert(bend !== undefined && Math.abs(bend.angle - 36.87) < 0.2, `꺽인 각도 ${bend?.angle}`)
+assert(bend !== undefined && Math.abs(bend.lengthToPoint - 400) < 1, `점까지 ${bend?.lengthToPoint}`)
+assert(!triangle.rectangle, '삼각형은 직사각형이 아님')
+const sampleDims = measureRoom(rectangleOutline(400, 350))
+assert(sampleDims.rectangle, '예시 방은 직사각형')
+assert(sampleDims.triangle === null, '직사각형 높이')
 
 console.log('selfCheck ok')

@@ -1,5 +1,7 @@
 export type Wall = 'north' | 'south' | 'east' | 'west'
 
+export type Point = { x: number; y: number }
+
 export type FurnitureType =
   | 'bed'
   | 'desk'
@@ -13,18 +15,15 @@ export type FurnitureType =
 
 export type GoalId = 'sleep' | 'study' | 'living' | 'storage' | 'open'
 
-export type Rotation = 0 | 90 | 180 | 270
-
 export type Room = {
-  width: number
-  depth: number
   height: number
+  outline: Point[]
 }
 
 export type Opening = {
   id: string
   kind: 'door' | 'window'
-  wall: Wall
+  edge: number
   offset: number
   width: number
   sill: number
@@ -56,7 +55,7 @@ export type Placed = Rect & {
   id: string
   type: FurnitureType
   h: number
-  rotation: Rotation
+  rotation: number
   nominalWidth: number
   nominalDepth: number
 }
@@ -72,7 +71,7 @@ export type LayoutResult = {
 
 export const GOALS: GoalId[] = ['sleep', 'study', 'living', 'storage', 'open']
 
-export const ROTATIONS: Rotation[] = [0, 90, 180, 270]
+export const ROTATIONS = [0, 90, 180, 270] as const
 
 export const FURNITURE_LABEL: Record<FurnitureType, string> = {
   bed: '침대',
